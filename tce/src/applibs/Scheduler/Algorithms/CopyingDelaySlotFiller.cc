@@ -82,14 +82,16 @@ IGNORE_COMPILER_WARNING("-Wstrict-overflow")
  * @param delaySlots number of delay slots in the machine.
  * @param fillFallThru fill from Fall-thru of jump BB?
  */
-void
+bool
 CopyingDelaySlotFiller::fillDelaySlots(
     BasicBlockNode& jumpingBB, int delaySlots, bool fillFallThru) {
     // do not try to fill loop scheduled, also skip epilog and prolog.
     if (jumpingBB.isLoopScheduled()) {
         bbnStatus_[&jumpingBB] = BBN_BOTH_FILLED;
-        return;
+        return false;
     }
+
+    bool cfgChanged = false;
 
     if (fillFallThru) {
         switch (bbnStatus_[&jumpingBB]) {
@@ -133,7 +135,7 @@ CopyingDelaySlotFiller::fillDelaySlots(
         // jump needed only when filling jump, not fall-thru.
         // not found?
         if (jumpMove == NULL) {
-            return;
+            return false;
         }
 
         if (!jumpMove->source().isInstructionAddress()) {
@@ -142,7 +144,7 @@ CopyingDelaySlotFiller::fillDelaySlots(
             if (jumpAddressData.first == NULL && 
                 jumpAddressData.second == NULL) {
                 //Imm source not found, aborting
-                return;
+                return false;
             }
         } else {
             jumpAddressData.first = jumpMove;
@@ -169,13 +171,13 @@ CopyingDelaySlotFiller::fillDelaySlots(
 
     // if we have conditional jump, find the predicate register
     if (jumpMove != NULL && !jumpMove->isUnconditional()) {
-        Guard& g = jumpMove->guard().guard();
-        RegisterGuard* rg = dynamic_cast<RegisterGuard*>(&g);
+        const Guard& g = jumpMove->guard().guard();
+        const RegisterGuard* rg = dynamic_cast<const RegisterGuard*>(&g);
         if (rg != NULL) {
             grFile = rg->registerFile();
             grIndex = rg->registerIndex();
         } else {
-            return; // port guards not yet supported
+            return false; // port guards not yet supported
         }
 
         // find when the predicate reg is written to and use that
@@ -300,21 +302,78 @@ CopyingDelaySlotFiller::fillDelaySlots(
 
         // filled some slots?
         if (slotsFilled != 0) {
+
             // filled from jump dest or fal-thru?
             if (!fillFallThru) {
                 // have to update jump destination
-                updateJumpsAndCfg(
+                cfgChanged |= updateJumpsAndCfg(
                     jumpingBB, nextBBN, edge, jumpAddressData.first,
                     jumpAddressData.second, jumpMove, slotsFilled, 
                     skippedJump);
             } else { // fall-thru, skip first instructions.
-                for (int i = 0; i < slotsFilled; i++) {
-                    assert(!irm.hasReference(
-                               nextBBN.basicBlock().instructionAtIndex(i)));
-                }
-                nextBBN.basicBlock().skipFirstInstructions(slotsFilled);
+                cfgChanged |= updateFTBBAndCfg(
+                    jumpingBB, nextBBN, edge, slotsFilled);
             }
         }
+    }
+    return cfgChanged;
+}
+
+bool CopyingDelaySlotFiller::updateFTBBAndCfg(
+    BasicBlockNode& jumpingBB, BasicBlockNode& nextBBN,
+    ControlFlowEdge& edge, int slotsFilled) {
+
+    InstructionReferenceManager& irm =
+        cfg_->program()->instructionReferenceManager();
+
+    for (int i = 0; i < slotsFilled; i++) {
+        assert(!irm.hasReference(
+                   nextBBN.basicBlock().instructionAtIndex(i)));
+    }
+
+    if (slotsFilled == nextBBN.basicBlock().instructionCount() &&
+        cfg_->inDegree(nextBBN) == 1) {
+        auto oEdges = cfg_->outEdges(nextBBN);
+        assert(oEdges.size() == 1);
+        ControlFlowEdge& laterEdge = **oEdges.begin();
+        BasicBlockNode& newDestNode = cfg_->headNode(laterEdge);
+
+        // update CFG because jump dest moved.
+        // the predicate is the same as the original
+        // fall-trhough, but if later is a jump or call pass.
+        // this is also a jump or call pass.
+        ControlFlowEdge* newEdge =
+            new ControlFlowEdge(
+                edge.edgePredicate(), laterEdge.edgeType());
+        cfg_->disconnectNodes(jumpingBB, nextBBN);
+        cfg_->connectNodes(jumpingBB, newDestNode, *newEdge);
+
+        cfg_->removeNode(nextBBN);
+        finishBB(nextBBN, true);
+
+        for (int i = 0;
+             i < nextBBN.basicBlock().instructionCount(); i++) {
+            Instruction& ins =
+                nextBBN.basicBlock().instructionAtIndex(i);
+            while(ins.moveCount()) {
+                Move& move = ins.move(0);
+                MoveNode & mn = ddg_->nodeOfMove(move);
+                ddg_->removeNode(mn);
+                delete &mn;
+                ins.removeMove(move);
+            }
+            while (ins.immediateCount()) {
+                Immediate& imm = ins.immediate(0);
+                ins.removeImmediate(imm);
+            }
+        }
+        delete &nextBBN;
+        // cfg changed
+        return true;
+    } else {
+        nextBBN.basicBlock().skipFirstInstructions(slotsFilled);
+        // cfg not changed
+        return false;
     }
 }
 
@@ -462,32 +521,34 @@ CopyingDelaySlotFiller::bbFilled(BasicBlockNode& bbn) {
  * if it can
  *
  * @param bbn just destination basic block.
+ * @return if anything was filled.
  */
-void CopyingDelaySlotFiller::mightFillIncomingTo(BasicBlockNode& bbn) {
+bool CopyingDelaySlotFiller::mightFillIncomingTo(BasicBlockNode& bbn) {
     if (bbnStatus_[&bbn] == BBN_UNKNOWN) {
-        return;
+        return false;
     }
     if (!areAllJumpPredsScheduled(bbn)) {
-        return;
+        return false;
     }
 
-     ControlFlowGraph::EdgeSet inEdges = cfg_->inEdges(bbn);
+    bool cfgChanged = false;
+    bool cfgChangedAfterRecheck = false;
+
+    ControlFlowGraph::EdgeSet jumpEdges = cfg_->incomingJumpEdges(bbn);
 
     // first fill all incoming jumps.
-    for (ControlFlowGraph::EdgeSet::iterator inIter = inEdges.begin();
-         inIter != inEdges.end(); inIter++) {
+    for (auto inIter = jumpEdges.begin(); inIter != jumpEdges.end();) {
         ControlFlowEdge& cfe = **inIter;
-        if (!cfe.isJumpEdge() ) {
-            continue;
-        }
-
         BasicBlockNode& jumpOrigin = cfg_->tailNode(cfe);
 
         if (jumpOrigin.isNormalBB() &&
             (bbnStatus_[&jumpOrigin] == BBN_SCHEDULED ||
              bbnStatus_[&jumpOrigin] == BBN_FALLTHRU_FILLED)) {
-            
-            fillDelaySlots(jumpOrigin, delaySlots_, false);
+
+            bool changed = fillDelaySlots(jumpOrigin, delaySlots_, false);
+            cfgChanged |= changed;
+            cfgChangedAfterRecheck |= changed;
+
             bbFilled(jumpOrigin);
 
             BasicBlockNode* fallThruSisterNode =
@@ -498,25 +559,41 @@ void CopyingDelaySlotFiller::mightFillIncomingTo(BasicBlockNode& bbn) {
                 bbnStatus_[fallThruSisterNode] > BBN_UNKNOWN &&
                 bbnStatus_[&jumpOrigin] < BBN_TEMPS_CLEANED &&
                 areAllJumpPredsFilled(*fallThruSisterNode)) {
-
-                fillDelaySlots(jumpOrigin, delaySlots_, true);
+                changed = fillDelaySlots(jumpOrigin, delaySlots_, true);
+                cfgChanged |= changed;
+                cfgChangedAfterRecheck |= changed;
                 bbFilled(jumpOrigin);
+                // may have been removed totally.
+            }
+
+            // If we changed the cfg, loafd the inedges again.
+            if (cfgChangedAfterRecheck) {
+                if (!cfg_->hasNode(bbn)) {
+                    return true;
+                }
+                cfgChangedAfterRecheck = false;
+                jumpEdges = cfg_->incomingJumpEdges(bbn);
+                inIter = jumpEdges.begin();
+                continue;
             }
         }
+        inIter++;
+    }
+
+    // No Fts to fill if the whole Basic Block is gone!
+    if (cfgChanged && !cfg_->hasNode(bbn)) {
+        return true;
     }
 
     // then all incoming jumps should be filled, fall-throughs can fill
-    for (ControlFlowGraph::EdgeSet::iterator inIter = inEdges.begin();
-         inIter != inEdges.end(); inIter++) {
-        ControlFlowEdge& cfe = **inIter;
-        if (!cfe.isFallThroughEdge()) {
-            continue;
-        }
-        BasicBlockNode& ftOrigin = cfg_->tailNode(cfe);
+    auto ftEdge = cfg_->incomingFTEdge(bbn);
+    // may still be call pass, which is not allowed.
+    if (ftEdge != nullptr && ftEdge->isFallThroughEdge()) {
+        BasicBlockNode& ftOrigin = cfg_->tailNode(*ftEdge);
 
         // fall thru-predecessor can be filled if it's scheduled.
         if (bbnStatus_[&ftOrigin] == BBN_JUMP_FILLED) {
-            fillDelaySlots(ftOrigin, delaySlots_, true);
+            cfgChanged |= fillDelaySlots(ftOrigin, delaySlots_, true);
             bbFilled(ftOrigin);
         } else {
             // do not take space from backwards jumps, ie loop jumps.
@@ -526,15 +603,15 @@ void CopyingDelaySlotFiller::mightFillIncomingTo(BasicBlockNode& bbn) {
                 if (jumpSisterNode != NULL &&
                     jumpSisterNode->originalStartAddress() >
                     bbn.originalStartAddress() &&
-		    areAllJumpPredsFilled(*jumpSisterNode)) {
+                    areAllJumpPredsFilled(*jumpSisterNode)) {
 
-                    fillDelaySlots(
-                        ftOrigin, delaySlots_, true);
+                    cfgChanged |= fillDelaySlots(ftOrigin, delaySlots_, true);
                     bbFilled(ftOrigin);
                 }
             }
         }
     }
+    return cfgChanged;
 }
 
 /**
@@ -560,13 +637,24 @@ CopyingDelaySlotFiller::bbnScheduled(BasicBlockNode& bbn) {
 
     bool fillableSuccessor = false;
     for (ControlFlowGraph::EdgeSet::iterator outIter = oEdges.begin();
-         outIter != oEdges.end(); outIter++) {
+         outIter != oEdges.end();) {
         ControlFlowEdge& cfe = **outIter;
+
         // cannot fill calls.
         if (!cfe.isCallPassEdge()) {
             fillableSuccessor = true;
-            mightFillIncomingTo(cfg_->headNode(cfe));
+            auto& head = cfg_->headNode(cfe);
+            if (mightFillIncomingTo(head)) {
+                // the filling might have removed the BBN.
+                if (!cfg_->hasNode(bbn)) {
+                    return;
+                }
+                oEdges = cfg_->outEdges(bbn);
+                outIter = oEdges.begin();
+                continue;
+            }
         }
+        outIter++;
     }
 
     if (!fillableSuccessor && bbnStatus_[&bbn] != BBN_ALL_DONE) {
@@ -788,6 +876,8 @@ CopyingDelaySlotFiller::collectMoves(
     Move*& skippedJump, int delaySlots) {
     PendingImmediateMap pendingImmediateMap;
 
+    ControlFlowEdge* connectingEdge =
+        *cfg_->connectingEdges(blockToFillNode, nextBBN).begin();
     BasicBlock& bb = blockToFillNode.basicBlock();
     BasicBlock& nextBB = nextBBN.basicBlock();
     SimpleResourceManager& rm = *resourceManagers_[&bb];
@@ -869,6 +959,7 @@ CopyingDelaySlotFiller::collectMoves(
                 if (oldMove.destination().isGPR()) {
                     return false;
                 }
+
                 if (oldMove.isTriggering()) {
                     Operation& o = oldMove.destination().operation();
                     if (o.writesMemory() || o.hasSideEffects() ||
@@ -898,7 +989,8 @@ CopyingDelaySlotFiller::collectMoves(
             }
 
             // also copies move
-            MoveNode& mn = getMoveNode(mnOld, blockToFillNode);
+            MoveNode& mn = getMoveNode(
+                mnOld, blockToFillNode, connectingEdge->isBackEdge());
             Move& newMove = mn.move();
 
             // reads immediate?
@@ -1274,27 +1366,29 @@ CopyingDelaySlotFiller::tryToAssignOtherMovesOfOp(
 
 MoveNode&
 CopyingDelaySlotFiller::getMoveNode(
-    MoveNode& old, BasicBlockNode& bbn) {
+    MoveNode& old, BasicBlockNode& bbn, bool fillOverBackEdge) {
     if (AssocTools::containsKey(moveNodes_,&old)) {
         return *moveNodes_[&old];
     } else {
-        Move& move = getMove(old.move());
-        MoveNode *newMN = new MoveNode(&move);
+        auto movePtr = getMove(old.move());
+        MoveNode *newMN = new MoveNode(movePtr);
         ddg_->addNode(*newMN, bbn);
-        ddg_->copyDependencies(old,*newMN);
+        ddg_->copyDependencies(old,*newMN, fillOverBackEdge);
 
         moveNodes_[&old] = newMN;
         oldMoveNodes_[newMN] = &old;
         mnOwned_[newMN] = true;
         if (old.isSourceOperation()) {
             newMN->setSourceOperationPtr(
-                getProgramOperationPtr(old.sourceOperationPtr(), bbn));
+                getProgramOperationPtr(
+                    old.sourceOperationPtr(), bbn, fillOverBackEdge));
             assert(newMN->isSourceOperation());
         }
         if (old.isDestinationOperation()) {
             for (unsigned int i = 0; i < old.destinationOperationCount(); i++) {
                 newMN->addDestinationOperationPtr(
-                    getProgramOperationPtr(old.destinationOperationPtr(i), bbn));
+                    getProgramOperationPtr(
+                        old.destinationOperationPtr(i), bbn, fillOverBackEdge));
             }
             assert(newMN->isDestinationOperation());
         }
@@ -1312,7 +1406,7 @@ CopyingDelaySlotFiller::getMoveNode(
  */
 ProgramOperationPtr
 CopyingDelaySlotFiller::getProgramOperationPtr(
-    ProgramOperationPtr old, BasicBlockNode& bbn) {
+    ProgramOperationPtr old, BasicBlockNode& bbn, bool fillOverBackEdge) {
     if (AssocTools::containsKey(programOperations_, old.get())) {
         return programOperations_[old.get()];
     } else {
@@ -1324,12 +1418,12 @@ CopyingDelaySlotFiller::getProgramOperationPtr(
         for (int i = 0; i < old->inputMoveCount();i++) {
             MoveNode& mn = old->inputMove(i);
             assert(mn.isDestinationOperation());
-            po->addInputNode(getMoveNode(mn, bbn));
+            po->addInputNode(getMoveNode(mn, bbn, fillOverBackEdge));
         }
         for (int j = 0; j < old->outputMoveCount();j++) {
             MoveNode& mn = old->outputMove(j);
             assert(mn.isSourceOperation());
-            po->addOutputNode(getMoveNode(mn,bbn));
+            po->addOutputNode(getMoveNode(mn,bbn, fillOverBackEdge));
         }
         return po;
     }
@@ -1343,14 +1437,14 @@ CopyingDelaySlotFiller::getProgramOperationPtr(
  * @param old Move in jump target BB.
  * @return new Move for this BB.
  */
-Move&
+std::shared_ptr<Move>
 CopyingDelaySlotFiller::getMove(Move& old) {
     if (AssocTools::containsKey(moves_,&old)) {
-        return *moves_[&old];
+        return moves_[&old];
     } else {
         MoveNode& oldMN = ddg_->nodeOfMove(old);
 
-        Move* newMove = old.copy();
+        auto newMove = old.copy();
         newMove->setBus(um_->universalBus());
 
         Terminal& source = newMove->source();
@@ -1408,7 +1502,7 @@ CopyingDelaySlotFiller::getMove(Move& old) {
             TTAProgram::MoveGuard* g = old.guard().copy();
             newMove->setGuard(g);
         }
-        return *newMove;
+        return newMove;
     }
 }
 
@@ -1516,14 +1610,28 @@ CopyingDelaySlotFiller::poMoved(
  */
 
 std::pair<int, TTAProgram::Move*>
-CopyingDelaySlotFiller::findJump(TTAProgram::BasicBlock& bb) {
+CopyingDelaySlotFiller::findJump(
+    TTAProgram::BasicBlock& bb, ControlFlowEdge::CFGEdgePredicate* pred) {
 
     for (int i = bb.instructionCount()-1; i >= 0; i--) {
         Instruction& ins = bb.instructionAtIndex(i);
         for (int j = 0; j < ins.moveCount(); j++ ) {
             Move& move = ins.move(j);
             if (move.isJump()) {
-                return std::pair<int, TTAProgram::Move*>(i, &move);
+                if (pred == nullptr) {
+                    return std::pair<int, TTAProgram::Move*>(i, &move);
+                }
+                if (move.isUnconditional()) {
+                    if (*pred == ControlFlowEdge::CFLOW_EDGE_NORMAL) {
+                        return std::pair<int, TTAProgram::Move*>(i, &move);
+                    }
+                } else {
+                    auto& guard = move.guard().guard();
+                    if ((*pred == ControlFlowEdge::CFLOW_EDGE_FALSE)
+                        == (guard.isInverted())) {
+                        return std::pair<int, TTAProgram::Move*>(i, &move);
+                    }
+                }
             }
         }
         //cal not handled
@@ -1544,14 +1652,16 @@ CopyingDelaySlotFiller::findJump(TTAProgram::BasicBlock& bb) {
  * @param fillEdge CFG edge connecting the basic blocks.
  * @param jumpAddress jump address being updated to new one.
  * @param slotsFilled how many delay slots were filled.
+ * @return true if removed a basic block or an cfg edge.
  */
-void
+bool
 CopyingDelaySlotFiller::updateJumpsAndCfg(
     BasicBlockNode& jumpBBN, BasicBlockNode& fillingBBN,
     ControlFlowEdge& fillEdge,
     Move* jumpAddressMove, Immediate* jumpAddressImmediate,
     Move* jumpMove, int slotsFilled, Move* skippedJump) {
 
+    bool cfgChanged = false;
     TerminalInstructionReference* jumpAddress = jumpAddressMove != NULL ?
         dynamic_cast<TerminalInstructionReference*>(
             &jumpAddressMove->source()) :
@@ -1580,6 +1690,7 @@ CopyingDelaySlotFiller::updateJumpsAndCfg(
         ControlFlowEdge* newEdge = new ControlFlowEdge(fillEdge);
         cfg_->disconnectNodes(jumpBBN, fillingBBN);
         cfg_->connectNodes(jumpBBN, newDestNode, *newEdge);
+        cfgChanged = true;
 
         if (skippedJump != NULL) {
             // if we skipped a jump. that jump may have already been filled,
@@ -1595,7 +1706,6 @@ CopyingDelaySlotFiller::updateJumpsAndCfg(
                 if (jumpAddressMove != NULL && jumpAddressMove != jumpMove) {
                     jumpAddressMove->parent().removeMove(
                         *jumpAddressMove);
-                    delete jumpAddressMove;
                 } else {
                     // get rid of the insructionreference by setting
                     // value of the imm to 0.
@@ -1629,7 +1739,7 @@ CopyingDelaySlotFiller::updateJumpsAndCfg(
             // remove whole bb then.
             cfg_->removeNode(fillingBBN);
             finishBB(fillingBBN, true);
-         
+
             for (int i = 0; i < nextBB.instructionCount(); i++) {
                 Instruction& ins = nextBB.instructionAtIndex(i);
                 while(ins.moveCount()) {
@@ -1638,12 +1748,10 @@ CopyingDelaySlotFiller::updateJumpsAndCfg(
                     ddg_->removeNode(mn);
                     delete &mn;
                     ins.removeMove(move);
-                    delete &move;
                 }
                 while (ins.immediateCount()) {
                     Immediate& imm = ins.immediate(0);
                     ins.removeImmediate(imm);
-                    delete &imm;
                 }
                     
             }
@@ -1658,7 +1766,7 @@ CopyingDelaySlotFiller::updateJumpsAndCfg(
         jumpAddress->setInstructionReference(ir);
 
         // remove the first instructions that are dead.
-        if (!cfg_->hasIncomingFallThru(fillingBBN)
+        if (cfg_->incomingFTEdge(fillingBBN) == nullptr
 	    && &fillingBBN != &cfg_->firstNormalNode()) {
             int deadInsCount = 0;
             while (nextBB.instructionCount() > deadInsCount &&
@@ -1674,6 +1782,7 @@ CopyingDelaySlotFiller::updateJumpsAndCfg(
             }
         }
     }
+    return cfgChanged;
 }
 
 /**

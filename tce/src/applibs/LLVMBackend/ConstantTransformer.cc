@@ -95,7 +95,9 @@ osalInputIndex(
     for (unsigned operandI = 0; operandI < instr.getNumOperands(); ++operandI) {
         const MachineOperand& mo = instr.getOperand(operandI);
         if (hasGuard && operandI == 0) continue;
-        if (mo.isReg() && (mo.isDef() || mo.isImplicit())) continue; // Output
+        // Output or metadata.
+        if ((mo.isReg() && (mo.isDef() || mo.isImplicit())) || mo.isMetadata())
+            continue;
         ++osalIndex;
         if (operandI == operandId) return osalIndex;
         // LLVM machineinstructions always present the addresses in the
@@ -191,12 +193,7 @@ ConstantTransformer::runOnMachineFunction(llvm::MachineFunction& mf) {
                         mach_, -mo.getImm()) && /* SUB is 32b */
                     MachineInfo::supportsOperation(mach_, "SUB")) {  
 
-#ifdef LLVM_3_5
-                    const llvm::MCInstrInfo* iinfo = mf.getTarget().getInstrInfo();
-#elif (defined LLVM_OLDER_THAN_3_7)
-                    const llvm::MCInstrInfo* iinfo = 
-                        mf.getTarget().getSubtargetImpl()->getInstrInfo();
-#elif LLVM_OLDER_THAN_6_0
+#if LLVM_OLDER_THAN_6_0
                     const llvm::MCInstrInfo* iinfo =
                         mf.getTarget().getSubtargetImpl(
                             *mf.getFunction())->getInstrInfo();

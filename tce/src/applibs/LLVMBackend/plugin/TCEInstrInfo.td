@@ -25,6 +25,10 @@ def MEMri : Operand<i32> {
   let MIOperandInfo = (ops R32IRegs, i32imm);
 }
 
+def TCESRAConst : SDNode<"TCEISD::SRA_Const", SDTIntBinOp, []>;
+def TCESRLConst : SDNode<"TCEISD::SRL_Const", SDTIntBinOp, []>;
+def TCESHLConst : SDNode<"TCEISD::SHL_Const", SDTIntBinOp, []>;
+
 // Branch targets have OtherVT type.
 def brtarget : Operand<OtherVT>;
 def calltarget : Operand<i32>;
@@ -275,6 +279,10 @@ def: Pat <(i32 (zext R1Regs:$src)), (ANDext R1Regs:$src, 1)>;
 
 include "GenInstrInfo.td"
 
+def: Pat <(i32 (shl R32IRegs:$val, (i32 1))), (ADDrrr R32Regs:$val, R32Regs:$val)>;
+def: Pat <(i32 (TCESHLConst R32IRegs:$val, (i32 1))), (ADDrrr R32IRegs:$val, R32IRegs:$val)>;
+
+
 // ----- Global addresses, constant pool entries ------
 def TCEGlobalAddr : SDNode<"TCEISD::GLOBAL_ADDR", SDTIntUnaryOp>;
 def TCEConstPool : SDNode<"TCEISD::CONST_POOL", SDTIntUnaryOp>;
@@ -335,14 +343,6 @@ def: Pat<(brind (i32 R32Regs:$dst)),
     def STWfi : InstTCE<(outs), (ins MEMri:$op1, R32FPRegs:$op2), "",
         [(store R32FPRegs:$op2, ADDRri:$op1)]>, Requires<[BigEndian]>;
 
-    def LDHhr : InstTCE<(outs R32HFPRegs:$op2), 
-        (ins MEMrr:$op1), "", [(set R32HFPRegs:$op2,
-        (load ADDRrr:$op1))]>, Requires<[BigEndian]>;
-
-    def LDHhi : InstTCE<(outs R32HFPRegs:$op2), 
-        (ins MEMri:$op1), "", [(set R32HFPRegs:$op2,
-        (load ADDRri:$op1))]>, Requires<[BigEndian]>;
-
     def STHhr : InstTCE<(outs), (ins MEMrr:$op1, R32HFPRegs:$op2), "",
         [(store R32HFPRegs:$op2, ADDRrr:$op1)]>, Requires<[BigEndian]>;
 
@@ -362,13 +362,6 @@ def: Pat<(brind (i32 R32Regs:$dst)),
     def ST32fi : InstTCE<(outs), (ins MEMri:$op1, R32FPRegs:$op2), "",
         [(store R32FPRegs:$op2, ADDRri:$op1)]>, Requires<[LittleEndian]>;
 
-    def LD16hr : InstTCE<(outs R32HFPRegs:$op2), 
-        (ins MEMrr:$op1), "", [(set R32HFPRegs:$op2,
-        (load ADDRrr:$op1))]>, Requires<[LittleEndian]>;
-
-    def LD16hi : InstTCE<(outs R32HFPRegs:$op2), 
-        (ins MEMri:$op1), "", [(set R32HFPRegs:$op2,
-        (load ADDRri:$op1))]>, Requires<[LittleEndian]>;
 
     def ST16hr : InstTCE<(outs), (ins MEMrr:$op1, R32HFPRegs:$op2), "",
         [(store R32HFPRegs:$op2, ADDRrr:$op1)]>, Requires<[LittleEndian]>;
@@ -402,7 +395,7 @@ def : Pat<(i32 (select R1Regs:$c, (i32 1), (i32 0))), (ANDext R1Regs:$c, 1)>;
 // sign extension from i1 means 0 -> 0 , 1(true) -> -1
 def: Pat <(i32 (sext R1Regs:$src)), (SUBrir 0, (ANDext R1Regs:$src,1))>;
 
-// boolean store and load
+// boolean store - big endian
 def STQBrb : InstTCE<(outs), (ins MEMrr:$op1,R1Regs:$op2), "",
     [(truncstorei8 R1Regs:$op2, ADDRrr:$op1)]>, Requires<[BigEndian]>;
 
@@ -422,16 +415,7 @@ def PRED_FALSE_STQBij : InstTCE<(outs), (ins R1Regs:$pred, MEMri:$op1,i1imm:$op2
 def : Pat<(store R1Regs:$src, ADDRrr:$addr), (STQBrb ADDRrr:$addr, R1Regs:$src)>, Requires<[BigEndian]>;
 def : Pat<(store R1Regs:$src, ADDRri:$addr), (STQBib ADDRri:$addr, R1Regs:$src)>, Requires<[BigEndian]>;
 
-def LDQBr : InstTCE<(outs R1Regs:$op2), (ins MEMrr:$op1), "", [(set R1Regs:$op2, (sextloadi1 ADDRrr:$op1))]>, Requires<[BigEndian]>;
-def LDQBi : InstTCE<(outs R1Regs:$op2), (ins MEMri:$op1), "", [(set R1Regs:$op2, (sextloadi1 ADDRri:$op1))]>, Requires<[BigEndian]>;
-def LDQUBr : InstTCE<(outs R1Regs:$op2), (ins MEMrr:$op1), "", [(set R1Regs:$op2, (zextloadi1 ADDRrr:$op1))]>, Requires<[BigEndian]>;
-def LDQUBi : InstTCE<(outs R1Regs:$op2), (ins MEMri:$op1), "", [(set R1Regs:$op2, (zextloadi1 ADDRri:$op1))]>, Requires<[BigEndian]>;
-
-def : Pat<(i1 (load ADDRrr:$addr)), (LDQBr ADDRrr:$addr)>, Requires<[BigEndian]>;
-def : Pat<(i1 (load ADDRri:$addr)), (LDQBi ADDRri:$addr)>, Requires<[BigEndian]>;
-
-
-// booleans tore and load - litte-endain
+// boolean store - litte-endain
 def ST8Brb : InstTCE<(outs), (ins MEMrr:$op1,R1Regs:$op2), "",
     [(truncstorei8 R1Regs:$op2, ADDRrr:$op1)]>, Requires<[LittleEndian]>;
 
@@ -451,16 +435,11 @@ def PRED_FALSE_ST8Bij : InstTCE<(outs), (ins R1Regs:$pred, MEMri:$op1,i1imm:$op2
 def : Pat<(store R1Regs:$src, ADDRrr:$addr), (ST8Brb ADDRrr:$addr, R1Regs:$src)>, Requires<[LittleEndian]>;
 def : Pat<(store R1Regs:$src, ADDRri:$addr), (ST8Bib ADDRri:$addr, R1Regs:$src)>, Requires<[LittleEndian]>;
 
-def LD8Br : InstTCE<(outs R1Regs:$op2), (ins MEMrr:$op1), "", [(set R1Regs:$op2, (sextloadi1 ADDRrr:$op1))]>, Requires<[LittleEndian]>;
-def LD8Bi : InstTCE<(outs R1Regs:$op2), (ins MEMri:$op1), "", [(set R1Regs:$op2, (sextloadi1 ADDRri:$op1))]>, Requires<[LittleEndian]>;
-def LDU8Br : InstTCE<(outs R1Regs:$op2), (ins MEMrr:$op1), "", [(set R1Regs:$op2, (zextloadi1 ADDRrr:$op1))]>, Requires<[LittleEndian]>;
-def LDU8Bi : InstTCE<(outs R1Regs:$op2), (ins MEMri:$op1), "", [(set R1Regs:$op2, (zextloadi1 ADDRri:$op1))]>, Requires<[LittleEndian]>;
- 
-def : Pat<(i1 (load ADDRrr:$addr)), (LD8Br ADDRrr:$addr)>, Requires<[LittleEndian]>;
-def : Pat<(i1 (load ADDRri:$addr)), (LD8Bi ADDRri:$addr)>, Requires<[LittleEndian]>;
-
-
 def: Pat <(i32 (sext R1Regs:$src)), (SUBrir 0,(ANDext R1Regs:$src, 1))>;
+
+// TODO: why did trunk have this? more overhead.
+//def: Pat<(i32 (sext R1Regs:$src)), 
+//         (SUBrrr (MOVI32ri 0),(ANDext R1Regs:$src, 1))>;
 
 // return address stack store/load
 def STWRArr : InstTCE<(outs), (ins MEMrr:$op1,RAReg:$op2), "", [(store RAReg:$op2, ADDRrr:$op1)]>, Requires<[BigEndian]>;

@@ -1,5 +1,5 @@
 /*
-    Copyright (c) 2002-2009 Tampere University.
+    Copyright (c) 2002-2020 Tampere University.
 
     This file is part of TTA-Based Codesign Environment (TCE).
 
@@ -52,7 +52,11 @@ using namespace llvm;
 #include <map>
 
 namespace {
+#ifdef LLVM_OLDER_THAN_10
     class LinkBitcode : public BasicBlockPass {
+#else
+    class LinkBitcode : public FunctionPass {
+#endif
     public:
         static char ID; // Pass ID, replacement for typeid       
         LinkBitcode(Module& input);
@@ -63,10 +67,15 @@ namespace {
         bool doFinalization (Module &M);
 
         // to suppress Clang warnings
+#ifdef LLVM_OLDER_THAN_10
         using llvm::BasicBlockPass::doInitialization;
         using llvm::BasicBlockPass::doFinalization;
-
         bool runOnBasicBlock(BasicBlock &BB);
+#else
+        using llvm::FunctionPass::doInitialization;
+        using llvm::FunctionPass::doFinalization;
+#endif
+        bool runOnFunction(Function &F);
 
     private:
         Module& inputModule_;
@@ -83,7 +92,11 @@ namespace {
  * Constructor
  */
 LinkBitcode::LinkBitcode(Module& input) :
+#ifdef LLVM_OLDER_THAN_10
     BasicBlockPass(ID), 
+#else
+    FunctionPass(ID),
+#endif
     inputModule_(input) {
 }
 
@@ -107,13 +120,7 @@ LinkBitcode::doFinalization(Module& /*M*/) {
 
 bool
 LinkBitcode::doInitialization(Module& M) {
-#ifdef LLVM_3_5
-    std::string errors;
-    if (Linker::LinkModules(
-	    &M, &inputModule_, Linker::DestroySource, &errors)) {
-        errs() << "Error during linking in LinkBitcodePass: " << errors << "\n";
-    } 
-#elif defined(LLVM_OLDER_THAN_3_8)
+#if defined(LLVM_OLDER_THAN_3_8)
     // TODO: what about the destroysource thing?
     // TODO: DiagnosticHandledFunction
     if (Linker::LinkModules(&M, &inputModule_)) {
@@ -127,7 +134,14 @@ LinkBitcode::doInitialization(Module& M) {
     return true;
 }
 
+#ifdef LLVM_OLDER_THAN_10
 bool
 LinkBitcode::runOnBasicBlock(BasicBlock& /*BB*/) {
+    return true;
+}
+#endif
+
+bool
+LinkBitcode::runOnFunction(Function&) {
     return true;
 }

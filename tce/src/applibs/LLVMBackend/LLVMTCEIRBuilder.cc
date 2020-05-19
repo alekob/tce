@@ -138,13 +138,7 @@ LLVMTCEIRBuilder::writeMachineFunction(MachineFunction& mf) {
         initDataSections();
         emitConstantPool(*mf.getConstantPool());    
     } else {
-#if defined(LLVM_3_5)
-        mang_ = new llvm::Mangler(tm_->getDataLayout());
-#elif defined(LLVM_OLDER_THAN_3_7)
-        mang_ = new llvm::Mangler(tm_->getSubtargetImpl()->getDataLayout());
-#else
         mang_ = new llvm::Mangler();
-#endif
     }
 
     // omit empty functions..
@@ -663,10 +657,19 @@ void
 LLVMTCEIRBuilder::compileOptimized(
     ControlFlowGraph& cfg, 
     llvm::AliasAnalysis* llvmAA) {
+
+    SchedulerCmdLineOptions* options =
+        dynamic_cast<SchedulerCmdLineOptions*>(
+            Application::cmdLineOptions());
+
+
     // TODO: on trunk single bb loop(swp), last param true(rr, threading)
     DataDependenceGraph* ddg = ddgBuilder_.build(
-        cfg, DataDependenceGraph::INTRA_BB_ANTIDEPS, 
-        *mach_, NULL, true, true, llvmAA);
+        cfg,
+        (options->isLoopOptDefined()) ?
+        DataDependenceGraph::SINGLE_BB_LOOP_ANTIDEPS :
+        DataDependenceGraph::INTRA_BB_ANTIDEPS, *mach_,
+        NULL, true, true, llvmAA);
 
     TCEString fnName = cfg.name();
 #ifdef WRITE_DDG_DOTS
@@ -831,8 +834,8 @@ LLVMTCEIRBuilder::isRealInstruction(const MachineInstr& instr) {
 
     std::string opName = operationName(instr);
 
-    // Pseudo instructions don't require any actual instructions.
-    if (opName == "PSEUDO") {
+    // Pseudo instructions or debug labels don't require any actual instructions.
+    if (opName == "PSEUDO" || opName == "DEBUG_LABEL") {
         return false;
     }
 
@@ -883,12 +886,7 @@ LLVMTCEIRBuilder::operationName(const MachineInstr& mi) const {
         return dynamic_cast<const TCETargetMachine&>(targetMachine())
             .operationName(mi.getDesc().getOpcode());
     } else {
-#ifdef LLVM_3_5
-        return targetMachine().getInstrInfo()->getName(mi.getOpcode());
-#elif (defined LLVM_OLDER_THAN_3_7)
-        return targetMachine().getSubtargetImpl()->getInstrInfo()->getName(
-            mi.getOpcode());
-#elif (defined LLVM_OLDER_THAN_4_0)
+#if (defined LLVM_OLDER_THAN_4_0)
         return targetMachine().getSubtargetImpl(
             *mi.getParent()->getParent()->getFunction())->getInstrInfo()->
             getName(mi.getOpcode());
@@ -1012,7 +1010,7 @@ LLVMTCEIRBuilder::fixJumpTableDestinations(
 void
 LLVMTCEIRBuilder::createMoveNode(
     ProgramOperationPtr& po,
-    TTAProgram::Move& m,
+    std::shared_ptr<TTAProgram::Move> m,
     bool isDestination) {
 
     MoveNode* mn = new MoveNode(m);
@@ -1021,13 +1019,13 @@ LLVMTCEIRBuilder::createMoveNode(
         po->addInputNode(*mn);
         mn->addDestinationOperationPtr(po);
         TTAProgram::TerminalFUPort& term =
-            dynamic_cast<TTAProgram::TerminalFUPort&>(m.destination());
+            dynamic_cast<TTAProgram::TerminalFUPort&>(m->destination());
         term.setProgramOperation(po);
     } else {
         po->addOutputNode(*mn);
         mn->setSourceOperationPtr(po);
         TTAProgram::TerminalFUPort& term =
-            dynamic_cast<TTAProgram::TerminalFUPort&>(m.source());
+            dynamic_cast<TTAProgram::TerminalFUPort&>(m->source());
         term.setProgramOperation(po);
     }
 }

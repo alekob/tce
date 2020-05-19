@@ -54,6 +54,8 @@
 #define GET_INSTRINFO_CTOR_DTOR
 #define GET_INSTRINFO_MC_DESC
 #include "TCEGenInstrInfo.inc"
+#undef GET_INSTRINFO_CTOR_DTOR
+#undef GET_INSTRINFO_MC_DESC
 
 
 using namespace llvm;
@@ -78,7 +80,7 @@ TCEInstrInfo:: ~TCEInstrInfo() {
  *
  * If the MBB already has an unconditional branch at end, does nothing.
  * 
- * @param mbb where to inser the branch instructions.
+ * @param mbb where to insert the branch instructions.
  * @param tbb jump target basic block
  * @param fbb false condition jump target, if insertin 2 branches
  *
@@ -93,11 +95,7 @@ TCEInstrInfo::insertBranch(
     MachineBasicBlock& mbb,
     MachineBasicBlock* tbb,
     MachineBasicBlock* fbb,
-#ifdef LLVM_OLDER_THAN_3_7
-    const llvm::SmallVectorImpl<llvm::MachineOperand>& cond,
-#else
     ArrayRef<MachineOperand> cond,
-#endif
 #ifdef LLVM_OLDER_THAN_3_9
     DebugLoc dl
 #else
@@ -222,6 +220,18 @@ storeRegToStackSlot(MachineBasicBlock &MBB, MachineBasicBlock::iterator I,
 
   BuildMI(MBB, I, DL, get(plugin_->getStore(RC))).addFrameIndex(FI).addImm(0)
       .addReg(SrcReg, getKillRegState(isKill));
+
+#ifdef LLVM_OLDER_THAN_6_0
+  LLVMContext& context = MBB.getParent()->getFunction()->getContext();
+#else
+  LLVMContext& context = MBB.getParent()->getFunction().getContext();
+#endif
+  llvm::Metadata* md = llvm::MDString::get(context, "AA_CATEGORY_STACK_SLOT");
+  MDNode* mdNode =
+      MDNode::get(context, llvm::ArrayRef<llvm::Metadata*>(&md, 1));
+  MachineOperand metaDataOperand = MachineOperand::CreateMetadata(mdNode);
+  I--; // buildmi moves the iterator to next ins, point to the created one.
+  I->addOperand(metaDataOperand);
 }
 
 void TCEInstrInfo::
@@ -234,6 +244,18 @@ loadRegFromStackSlot(MachineBasicBlock &MBB, MachineBasicBlock::iterator I,
 
   BuildMI(MBB, I, DL, get(plugin_->getLoad(RC)), DestReg).addFrameIndex(FI)
       .addImm(0);
+
+#ifdef LLVM_OLDER_THAN_6_0
+  LLVMContext& context = MBB.getParent()->getFunction()->getContext();
+#else
+  LLVMContext& context = MBB.getParent()->getFunction().getContext();
+#endif
+  llvm::Metadata* md = llvm::MDString::get(context, "AA_CATEGORY_STACK_SLOT");
+  MDNode* mdNode =
+      MDNode::get(context, llvm::ArrayRef<llvm::Metadata*>(&md, 1));
+  MachineOperand metaDataOperand = MachineOperand::CreateMetadata(mdNode);
+  I--; // buildmi moves the iterator to next ins, point to the created one.
+  I->addOperand(metaDataOperand);
 }
 
 /**
@@ -253,7 +275,11 @@ void TCEInstrInfo::copyPhysReg(
 #else
     const DebugLoc& DL,
 #endif
-    unsigned destReg, unsigned srcReg,
+#ifdef LLVM_OLDER_THAN_10
+        unsigned destReg, unsigned srcReg,
+#else
+        MCRegister destReg, MCRegister srcReg,
+#endif
     bool killSrc) const
 {
     DebugLoc dl;
@@ -483,11 +509,7 @@ bool TCEInstrInfo::PredicateInstruction(
 #else
     MachineInstr& mi_ref,
 #endif
-#ifdef LLVM_OLDER_THAN_3_7
-    const SmallVectorImpl<MachineOperand> &cond
-#else
     ArrayRef<MachineOperand> cond
-#endif
 ) const {
 
 #ifndef LLVM_OLDER_THAN_3_9
@@ -527,10 +549,8 @@ bool TCEInstrInfo::PredicateInstruction(
 						    mo.isDebug());
         } else if (mo.isImm()) {
             mi->getOperand(oper+1).ChangeToImmediate(mo.getImm());
-#ifndef LLVM_OLDER_THAN_3_6
         } else if (mo.isFPImm()) {
             mi->getOperand(oper+1).ChangeToFPImmediate(mo.getFPImm());
-#endif
         } else if (mo.isGlobal()) {
             // TODO: what to do here? 
             llvm_unreachable("Unexpected operand type");

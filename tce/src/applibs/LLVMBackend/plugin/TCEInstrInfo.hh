@@ -74,11 +74,7 @@ namespace llvm {
 #endif
             MachineBasicBlock &MBB, MachineBasicBlock *TBB,
             MachineBasicBlock *FBB,
-#ifdef LLVM_OLDER_THAN_3_7
-            const SmallVectorImpl<MachineOperand> &Cond,
-#else
             ArrayRef<MachineOperand> Cond,
-#endif
 #ifdef LLVM_OLDER_THAN_3_9
             DebugLoc DL
 #else
@@ -142,7 +138,11 @@ namespace llvm {
 #else
         const DebugLoc& DL,
 #endif
+#ifdef LLVM_OLDER_THAN_10
         unsigned destReg, unsigned srcReg,
+#else
+        MCRegister destReg, MCRegister srcReg,
+#endif
         bool KillSrc) const override;
 
 #if LLVM_OLDER_THAN_4_0
@@ -175,11 +175,7 @@ namespace llvm {
 #endif
 #endif
 
-#ifdef LLVM_OLDER_THAN_3_7
-    virtual bool PredicateInstruction(
-        MachineInstr *mi,
-        const SmallVectorImpl<MachineOperand> &cond) const override;
-#elif defined LLVM_OLDER_THAN_3_9
+#if defined LLVM_OLDER_THAN_3_9
     virtual bool PredicateInstruction(
         MachineInstr *mi,
         ArrayRef<MachineOperand> cond) const override;
@@ -197,19 +193,11 @@ namespace llvm {
 #endif
         std::vector<MachineOperand> &Pred) const override;
 
-#ifdef LLVM_OLDER_THAN_3_7
-	virtual bool
-	SubsumesPredicate(const SmallVectorImpl<MachineOperand> &Pred1,
-			  const SmallVectorImpl<MachineOperand> &Pred2) const override {
-	    return false;
-	}
-#else
 	virtual bool
 	SubsumesPredicate(ArrayRef<MachineOperand> Pred1,
                       ArrayRef<MachineOperand> Pred2) const override {
 	    return false;
 	}
-#endif
 
 #ifdef LLVM_OLDER_THAN_3_8
     virtual bool isProfitableToIfCvt(MachineBasicBlock &MBB, unsigned NumCycles,

@@ -43,11 +43,7 @@ IGNORE_COMPILER_WARNING("-Wcomment")
 #include <llvm/IR/Dominators.h>
 
 #include <llvm/Analysis/AliasAnalysis.h>
-#ifdef LLVM_OLDER_THAN_3_7
-#include <llvm/PassManager.h>
-#else
 #include <llvm/IR/LegacyPassManager.h>
-#endif
 #include <llvm/Pass.h>
 //#include <llvm/ModuleProvider.h>
 
@@ -93,6 +89,10 @@ IGNORE_COMPILER_WARNING("-Wcomment")
 #include "tce_config.h" // to get llvm version
 
 #include <llvm/Support/TargetRegistry.h>
+
+#ifndef LLVM_OLDER_THAN_10
+#include <llvm/InitializePasses.h>
+#endif
 
 // cheat llvm's multi-include-protection
 #define CONFIG_H
@@ -143,6 +143,7 @@ const std::string LLVMBackend::PLUGIN_PREFIX = "tcecc-";
 const std::string LLVMBackend::PLUGIN_SUFFIX = ".so";
 const TCEString LLVMBackend::CXX0X_FLAG = "-std=c++0x";
 const TCEString LLVMBackend::CXX11_FLAG = "-std=c++11";
+const TCEString LLVMBackend::CXX14_FLAG = "-std=c++14";
 
 /**
  * Returns minimum opset that is required by llvm.
@@ -261,6 +262,7 @@ LLVMBackend::LLVMBackend(bool useInstalledVersion, TCEString tempDir) :
         cachePath_ = options_->backendCacheDir();
 
     PassRegistry &Registry = *llvm::PassRegistry::getPassRegistry();
+#ifdef LLVM_OLDER_THAN_10
     initializeCore(Registry);
     initializeScalarOpts(Registry);
     initializeIPO(Registry);
@@ -271,6 +273,15 @@ LLVMBackend::LLVMBackend(bool useInstalledVersion, TCEString tempDir) :
     initializeTransformUtils(Registry);
     initializeInstCombine(Registry);
     initializeTarget(Registry);
+#else
+    llvm::initializeCore(Registry);
+    llvm::initializeScalarOpts(Registry);
+    llvm::initializeIPO(Registry);
+    llvm::initializeAnalysis(Registry);
+    llvm::initializeTransformUtils(Registry);
+    llvm::initializeInstCombine(Registry);
+    llvm::initializeTarget(Registry);
+#endif
 }
 
 /**
@@ -332,11 +343,7 @@ LLVMBackend::compile(
 
     // todo: what are these buffers..
     std::unique_ptr<MemoryBuffer> buffer = std::move(bufferPtr.get());
-#ifdef LLVM_3_5
-    ErrorOr<Module*> module = parseBitcodeFile(buffer.get(), context);
-#elif defined(LLVM_OLDER_THAN_3_7)
-    ErrorOr<Module*> module = parseBitcodeFile(buffer.get()->getMemBufferRef(), context);
-#elif defined(LLVM_OLDER_THAN_4_0)
+#if defined(LLVM_OLDER_THAN_4_0)
     ErrorOr<std::unique_ptr<llvm::Module> > module =
         parseBitcodeFile(buffer.get()->getMemBufferRef(), context);
 #else
@@ -348,13 +355,9 @@ LLVMBackend::compile(
     }
 #endif
 
-#ifdef LLVM_OLDER_THAN_3_7
-    m.reset(module.get());
-#else
     // TODO: why does this work? it should not?
 //    m.reset(module.get().get());
     m = std::move(module.get());
-#endif
 
     if (m.get() == 0) {
         std::string msg = "Error parsing bytecode file: " + bytecodeFile +
@@ -377,12 +380,7 @@ LLVMBackend::compile(
 
         std::unique_ptr<MemoryBuffer> emuBuffer = 
             std::move(emuBufferPtr.get());
-#ifdef LLVM_3_5
-        ErrorOr<Module*> module = parseBitcodeFile(emuBuffer.get(), context);
-#elif (defined LLVM_OLDER_THAN_3_7)
-        ErrorOr<Module*> module = 
-            parseBitcodeFile(emuBuffer.get()->getMemBufferRef(), context);
-#elif defined(LLVM_OLDER_THAN_4_0)
+#if defined(LLVM_OLDER_THAN_4_0)
         ErrorOr<std::unique_ptr<Module> > module =
             parseBitcodeFile(emuBuffer.get()->getMemBufferRef(), context);
 #else
@@ -395,11 +393,7 @@ LLVMBackend::compile(
         }
 #endif
 
-#ifdef LLVM_OLDER_THAN_3_7
-        emuM.reset(module.get());
-#else
         emuM = std::move(module.get());
-#endif       
         if (emuM.get() == 0) {
             std::string msg = "Error parsing bytecode file: " + 
                 emulationBytecodeFile + " of emulation library \n" 
@@ -502,14 +496,6 @@ LLVMBackend::compile(
     
     if (!tceTarget) {
         errs() << errorStr << "\n";
-#ifdef LLVM_OLDER_THAN_3_7
-        errs() << "Available targets:\n";
-        for (TargetRegistry::iterator i = TargetRegistry::begin(); 
-             i != TargetRegistry::end(); i++) {
-            errs() << i->getName() << " : " 
-                   << i->getShortDescription() << "\n";
-        }
-#endif
         return NULL;
     }
     
@@ -522,10 +508,6 @@ LLVMBackend::compile(
     // TODO: has this been removed or replaced with something else?
 #endif
     Options.PrintMachineCode = false; //PrintCode;
-#ifdef LLVM_OLDER_THAN_3_7
-    Options.NoFramePointerElim = false; // DisableFPElim;
-    Options.UseSoftFloat = false; //GenerateSoftFloatCalls; 
-#endif
     Options.UnsafeFPMath = false; //EnableUnsafeFPMath;
     Options.NoInfsFPMath = false; //EnableNoInfsFPMath;
     Options.NoNaNsFPMath = false; //EnableNoNaNsFPMath;
@@ -548,15 +530,6 @@ LLVMBackend::compile(
         return NULL;
     }
 
-#ifndef LLVM_OLDER_THAN_3_7
-    const llvm::DataLayout& moduleDL = module.getDataLayout();
-    const llvm::DataLayout& targetDL = targetMachine->createDataLayout();
-    if (moduleDL != targetDL) {
-      errs() << "DataLayout mismatch with module: " << module.getName() << "\n"
-             << "Module: " << moduleDL.getStringRepresentation() << "\n"
-             << "Target: " << targetDL.getStringRepresentation() << "\n";
-    }
-#endif
     // This hack must be cleaned up before adding TCE target to llvm upstream
     // these are needed by TCETargetMachine::addInstSelector passes
     targetMachine->setTargetMachinePlugin(plugin);
@@ -567,42 +540,27 @@ LLVMBackend::compile(
      * This is quite straight copy how llc actually creates passes for target.
      */       
 
+#ifdef LLVM_OLDER_THAN_10
     // if opt level is less than 2 we will not run extra optimization passes
     // after linking emulation function code
     CodeGenOpt::Level OptLevel = 
         (optLevel < 2) ? (CodeGenOpt::None) : (CodeGenOpt::Aggressive);
+#endif
 
-#ifdef LLVM_OLDER_THAN_3_7
-    llvm::PassManager Passes;
-#define addPass(P) Passes.add(P)    
-#else
     llvm::legacy::PassManager Passes;
 #define addPass(P) Passes.add(P)    
-#endif
     
-    /// @todo DataLayout.h states that DataLayoutPass should never be used.
-    /// However, some tests will fail if it isn't added to Passes.
-#ifdef LLVM_3_5
-    const DataLayout *DL = targetMachine->getDataLayout();
-    assert(DL != NULL);
-    addPass(new DataLayoutPass(*DL));
-#elif (defined LLVM_OLDER_THAN_3_7)
-    addPass(new DataLayoutPass());
-#else
-    // LLVM 3.7 and newer don't require DataLayoutPass.
-#endif
-
-#ifdef LLVM_OLDER_THAN_3_7
-    targetMachine->addPassesToEmitFile(
-        Passes, fouts(), TargetMachine::CGFT_AssemblyFile, OptLevel);
-#else
     llvm::raw_fd_ostream sos(STDOUT_FILENO, false);
 #ifdef LLVM_OLDER_THAN_7
     targetMachine->addPassesToEmitFile(
         Passes, sos, TargetMachine::CGFT_AssemblyFile, OptLevel);
 #else
+#ifdef LLVM_OLDER_THAN_10
     targetMachine->addPassesToEmitFile(
         Passes, sos, nullptr, TargetMachine::CGFT_AssemblyFile, OptLevel);
+#else
+    targetMachine->addPassesToEmitFile(
+        Passes, sos, nullptr, CGFT_AssemblyFile);
 #endif
 #endif
 
@@ -884,15 +842,7 @@ LLVMBackend::createPlugin(const TTAMachine::Machine& target) {
     }
 
     // NOTE: this could be get from Makefile.am
-    std::string pluginSources =
-        srcsPath + "TCERegisterInfo.cc " +
-        srcsPath + "TCEInstrInfo.cc " +
-        srcsPath + "TCEISelLowering.cc " +
-        srcsPath + "TCEDAGToDAGISel.cc " +
-        srcsPath + "TCETargetObjectFile.cc " +
-        srcsPath + "TCEFrameInfo.cc " +
-        srcsPath + "TCETargetMachinePlugin.cc " +
-        srcsPath + "TCESubtarget.cc ";
+    TCEString pluginSources = srcsPath + "PluginCompileWrapper.cc ";
 
     TCEString endianOption = target.isLittleEndian() ?
         "-DLITTLE_ENDIAN_TARGET" : "";
@@ -904,10 +854,14 @@ LLVMBackend::createPlugin(const TTAMachine::Machine& target) {
         pluginIncludeFlags +
         " " + SHARED_CXX_FLAGS +
         " " + LLVM_CPPFLAGS +
+#ifdef LLVM_OLDER_THAN_10
 #if defined(HAVE_CXX0X)
         " " + CXX0X_FLAG +
 #elif defined(HAVE_CXX11)
         " " + CXX11_FLAG +
+#endif
+#else
+        " " + CXX14_FLAG +
 #endif
         " " + endianOption +
         " " + pluginSources +

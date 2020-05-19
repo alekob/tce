@@ -1359,7 +1359,7 @@ ControlFlowGraph::statistics() {
  * @return node where control falls thru from given node or NULL if not exist.
  */
 BasicBlockNode*
-ControlFlowGraph::fallThruSuccessor(BasicBlockNode& bbn) {
+ControlFlowGraph::fallThruSuccessor(const BasicBlockNode& bbn) {
     if (bbn.isExitBB()) {
         return NULL;
     }
@@ -1380,7 +1380,7 @@ ControlFlowGraph::fallThruSuccessor(BasicBlockNode& bbn) {
  * @param bbn bbn to check for fall-thru predecessors
  * @return if control can fall-thru to this BB.
  */
-bool ControlFlowGraph::hasFallThruPredecessor(BasicBlockNode& bbn) {
+bool ControlFlowGraph::hasFallThruPredecessor(const BasicBlockNode& bbn) {
     EdgeSet iEdges = inEdges(bbn);
     for (EdgeSet::iterator i = iEdges.begin(); i != iEdges.end(); i++) {
         if ((*i)->isFallThroughEdge() || (*i)->isCallPassEdge()) {
@@ -2234,24 +2234,24 @@ ControlFlowGraph::updateReferencesFromProcToCfg() {
 
 
 /**
- * Tells whether a node has incoming fall-thru edge.
+ * Return an incoming fall-thru edge to a node.
  * Jump and entry is also considered fall-thru
  *
  * @param bbn the node
- * @return whether control flow can fall thru to this node
+ * @return the edge or null, if none found.
  */
-bool
-ControlFlowGraph::hasIncomingFallThru(const BasicBlockNode& bbn) const {
-    ControlFlowGraph::EdgeSet iEdges = inEdges(bbn);
-    
-    for (ControlFlowGraph::EdgeSet::const_iterator i = iEdges.begin();
-         i != iEdges.end(); i++) {
-        const ControlFlowEdge& e = **i;
-        if (!e.isJumpEdge()) {
-            return true;
+ControlFlowEdge*
+ControlFlowGraph::incomingFTEdge(const BasicBlockNode& bbn) const {
+
+    auto edges = boost::in_edges(descriptor(bbn), graph_);
+    for (auto i = edges.first; i != edges.second; ++i) {
+        auto edge = graph_[(*i)];
+        if (!edge->isJumpEdge()) {
+            edgeDescriptors_[edge] = *i;
+            return edge;
         }
     }
-    return false;
+    return nullptr;
 }
 
 /**
@@ -2262,16 +2262,29 @@ ControlFlowGraph::hasIncomingFallThru(const BasicBlockNode& bbn) const {
  */
 bool
 ControlFlowGraph::hasIncomingExternalJumps(const BasicBlockNode& bbn) const {
-    ControlFlowGraph::EdgeSet iEdges = inEdges(bbn);
+    ControlFlowGraph::EdgeSet jumpEdges = incomingJumpEdges(bbn);
     
-    for (ControlFlowGraph::EdgeSet::const_iterator i = iEdges.begin();
-         i != iEdges.end(); i++) {
-        const ControlFlowEdge& e = **i;
-        if (e.isJumpEdge() && &tailNode(e) != &bbn) {
+    for (auto e: jumpEdges) {
+        if (&tailNode(*e) != &bbn) {
             return true;
         }
     }
     return false;
+}
+
+ControlFlowGraph::EdgeSet
+    ControlFlowGraph::incomingJumpEdges(const BasicBlockNode& bbn) const {
+
+    auto edges = boost::in_edges(descriptor(bbn), graph_);
+    EdgeSet result;
+    for (auto i = edges.first; i != edges.second; ++i) {
+        auto edge = graph_[(*i)];
+        if (edge->isJumpEdge()) {
+            edgeDescriptors_[edge] = *i;
+            result.insert(edge);
+        }
+    }
+    return result;
 }
 
 /**
@@ -2347,7 +2360,6 @@ ControlFlowGraph::removeJumpToTarget(
                             }
 
                             ins.removeMove(move);
-                            delete &move;
                             return JUMP_REMOVED;
                         } else {
                             // two conditional jumps? nasty. no can do
@@ -2365,7 +2377,6 @@ ControlFlowGraph::removeJumpToTarget(
                         }
 
                         ins.removeMove(move);
-                        delete &move;
                         // check if there are moves/immeds left.
                         // if not, update refs.
                         for (; idx < cs.instructionCount(); idx++) {

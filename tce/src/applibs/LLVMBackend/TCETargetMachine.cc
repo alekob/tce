@@ -37,11 +37,7 @@ IGNORE_COMPILER_WARNING("-Wunused-parameter")
 
 #include "tce_config.h"
 
-#ifdef LLVM_OLDER_THAN_3_7
-#include "llvm/PassManager.h"
-#else
 #include "llvm/IR/PassManager.h"
-#endif
 #ifdef LLVM_OLDER_THAN_6_0
 #include "llvm/Target/TargetRegisterInfo.h"
 #else
@@ -77,16 +73,20 @@ Pass* createLinkBitcodePass(Module& inputCode);
 Pass* createProgramPartitionerPass();
 Pass* createInstructionPatternAnalyzer();
 
-#ifndef LLVM_OLDER_THAN_3_7
-
 class DummyInstPrinter : public MCInstPrinter {
 public:
     DummyInstPrinter(
         const llvm::MCAsmInfo& mai, const llvm::MCInstrInfo& mii, 
         const llvm::MCRegisterInfo& mri) : llvm::MCInstPrinter(mai, mii, mri) {}
+#ifdef LLVM_OLDER_THAN_10
     void printInst(
         const MCInst*, raw_ostream&, StringRef,
         const MCSubtargetInfo&) override {}    
+#else
+    void printInst(
+        const MCInst*, uint64_t, StringRef,
+        const MCSubtargetInfo&, raw_ostream&) override {}
+#endif
 };
 
 // In TCE target we don't print the MCInsts from LLVM, but
@@ -103,19 +103,15 @@ MCInstPrinter *dummyInstrPrinterCtor(
     return new DummyInstPrinter(MAI, MII, MRI);
 }
 
-#endif
-
 extern "C" void LLVMInitializeTCETarget() { 
     RegisterTargetMachine<TCETargetMachine> Y(TheTCETarget);
     RegisterTargetMachine<TCETargetMachine> X(TheTCELETarget);
 
     RegisterMCAsmInfo<TCEMCAsmInfo> Z(TheTCETarget);
     RegisterMCAsmInfo<TCEMCAsmInfo> V(TheTCELETarget);
-#ifndef LLVM_OLDER_THAN_3_7
     TargetRegistry::RegisterMCInstPrinter(TheTCETarget, dummyInstrPrinterCtor);
     TargetRegistry::RegisterMCInstPrinter(
         TheTCELETarget, dummyInstrPrinterCtor);
-#endif
 }
 
 //
@@ -130,15 +126,7 @@ extern "C" void LLVMInitializeTCETarget() {
 // etc.
 // 
 
-#ifdef LLVM_OLDER_THAN_3_7
-TCETargetMachine::TCETargetMachine(
-    const Target &T, const std::string &TT, const std::string& CPU,
-    const std::string &FS, const TargetOptions &Options,
-    Reloc::Model RM, CodeModel::Model CM, CodeGenOpt::Level OL) : 
-    TCEBaseTargetMachine(T, TT, CPU, FS, Options, RM, CM, OL), plugin_(NULL),
-    pluginTool_(NULL) {
-}
-#elif defined LLVM_OLDER_THAN_3_9
+#ifdef LLVM_OLDER_THAN_3_9
 TCETargetMachine::TCETargetMachine(
     const Target &T, const Triple& TTriple,
     const std::string& CPU, const std::string &FS, 
@@ -194,6 +182,10 @@ TCETargetMachine::setTargetMachinePlugin(TCETargetMachinePlugin& plugin) {
     if (!plugin_->hasMUL()) missingOps_.insert(std::make_pair(llvm::ISD::MUL, MVT::i32));
     if (!plugin_->hasROTL()) missingOps_.insert(std::make_pair(llvm::ISD::ROTL, MVT::i32));
     if (!plugin_->hasROTR()) missingOps_.insert(std::make_pair(llvm::ISD::ROTR, MVT::i32));
+
+    if (!plugin_->hasSHL()) customLegalizedOps_.insert(std::make_pair(llvm::ISD::SHL, MVT::i32));
+    if (!plugin_->hasSHR()) customLegalizedOps_.insert(std::make_pair(llvm::ISD::SRA, MVT::i32));
+    if (!plugin_->hasSHRU()) customLegalizedOps_.insert(std::make_pair(llvm::ISD::SRL, MVT::i32));
 
     if (!plugin_->hasSXHW()) missingOps_.insert(
         std::make_pair(llvm::ISD::SIGN_EXTEND_INREG, MVT::i16));
@@ -259,20 +251,13 @@ TCEPassConfig::addInstSelector()
  * @param pm Function pass manager to add isel pass.
  * @param fast Not used.
  */
-#if LLVM_OLDER_THAN_3_6                               
-bool
-#else
 void
-#endif
 TCEPassConfig::addPreRegAlloc() {
     LLVMTCECmdLineOptions *options =
         dynamic_cast<LLVMTCECmdLineOptions*>(Application::cmdLineOptions());
     addPass(createProgramPartitionerPass());
     if (options != NULL && options->analyzeInstructionPatterns())
         addPass(createInstructionPatternAnalyzer());
-#if LLVM_OLDER_THAN_3_6
-    return false;
-#endif
 }
 
 
@@ -327,6 +312,15 @@ TCETargetMachine::missingOperations() {
     return &missingOps_;
 }
 
+/**
+ * Returns list of llvm::ISD SelectionDAG opcodes for operations that are not
+ * supported in the target architecture but will be custom-selected.
+ */
+const std::set<std::pair<unsigned, llvm::MVT::SimpleValueType> >*
+TCETargetMachine::customLegalizedOperations() {
+    return &customLegalizedOps_;
+}
+
 TargetPassConfig* 
 TCETargetMachine::createPassConfig(
     PassManagerBase &PM) {
@@ -338,14 +332,7 @@ TCETargetMachine::createPassConfig(
     return tpc;
 }
 
-#ifdef LLVM_OLDER_THAN_3_6
-bool
-#else
 void
-#endif
 TCEPassConfig::addPreSched2() {
     addPass(&IfConverterID);
-#ifdef LLVM_OLDER_THAN_3_6
-    return true;
-#endif
 }

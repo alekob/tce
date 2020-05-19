@@ -87,16 +87,7 @@ namespace llvm {
    class TCETargetMachinePlugin {
     public:
        TCETargetMachinePlugin() : lowering_(NULL), tm_(NULL),
-                                  dl_(TCEBEDLString)
-#ifdef LLVM_OLDER_THAN_3_7
-           ,tsInfo_(&dl_)
-#else
-           // In 3.7, the TargetSelectionDAGInfo constructor doesn't
-           // take arguments.
-#endif
-
-                             // this is overwritten anyway later
- {};
+                                  dl_(TCEBEDLString) {};
        virtual ~TCETargetMachinePlugin() {};
 
        virtual const TargetInstrInfo* getInstrInfo() const = 0;
@@ -152,6 +143,13 @@ namespace llvm {
        virtual bool hasSXHW() const = 0;
        virtual bool hasSXQW() const = 0;
        virtual bool hasSQRTF() const = 0;
+       virtual bool hasSHR() const = 0;
+       virtual bool hasSHL() const = 0;
+       virtual bool hasSHRU() const = 0;
+
+       virtual bool has8bitLoads() const = 0;
+       virtual bool has16bitLoads() const = 0;
+
        virtual int maxVectorSize() const = 0;
        /// Plugin needs target machine for TragetLowering generation
        virtual void registerTargetMachine(TCETargetMachine &tm) = 0;

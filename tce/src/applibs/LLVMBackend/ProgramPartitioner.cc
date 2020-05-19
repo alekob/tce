@@ -154,10 +154,17 @@ ProgramPartitioner::runOnMachineFunction(llvm::MachineFunction& MF) {
              j != i->end(); j++) {
             const llvm::MachineInstr& mi = *j; 
 
+#ifdef LLVM_OLDER_THAN_10
             if (mi.getNumOperands() == 0 || !mi.getOperand(0).isReg() || 
                 !mi.getOperand(0).isDef() || 
                 llvm::TargetRegisterInfo::isPhysicalRegister(
                     mi.getOperand(0).getReg())) 
+#else
+            if (mi.getNumOperands() == 0 || !mi.getOperand(0).isReg() ||
+                !mi.getOperand(0).isDef() ||
+                Register::isPhysicalRegister(
+                    mi.getOperand(0).getReg()))
+#endif
                 continue;
             
             if (partitions.find(&mi) != partitions.end())
@@ -275,13 +282,9 @@ ProgramPartitioner::findNodeIndex(
                 // operand 2 - y coordinate
                 // operand 3 - z coordinate
                 // pick X coordinate
-#ifdef LLVM_OLDER_THAN_3_6
-                id_x = cast<llvm::ConstantInt>(xyz->getOperand(1));
-#else
                 id_x = cast<llvm::ConstantInt>(
                     dyn_cast<llvm::ConstantAsMetadata>(
                         xyz->getOperand(1))->getValue());
-#endif
             } else {
                 // old metadata format was
                 // operand 0 - WI_id
@@ -290,13 +293,9 @@ ProgramPartitioner::findNodeIndex(
                 // operand 3 - y coordinate
                 // operand 4 - z coordinate
                 // operand 5 - instruction number
-#ifdef LLVM_OLDER_THAN_3_6
-                id_x = cast<llvm::ConstantInt>(md->getOperand(2));
-#else
                 id_x = cast<llvm::ConstantInt>(
                     dyn_cast<llvm::ConstantAsMetadata>(
                         md->getOperand(2))->getValue());
-#endif
             }
             if (id_x == NULL)
                 continue;
@@ -328,8 +327,14 @@ ProgramPartitioner::findNodeIndex(
             mi.getOperand(i).isDef()) {
             
             const llvm::MachineOperand& result = mi.getOperand(i);
+#ifdef LLVM_OLDER_THAN_10
             if (llvm::TargetRegisterInfo::isPhysicalRegister(
                     mi.getOperand(i).getReg())) continue;
+#else
+            if (Register::isPhysicalRegister(
+                    mi.getOperand(i).getReg())) continue;
+#endif
+
             const llvm::TargetRegisterClass* nodeRegClass = 
                 tmPlugin.nodeRegClass(nodeIndex, MRI.getRegClass(result.getReg()));
 #ifdef DEBUG_PROGRAM_PARTITIONER

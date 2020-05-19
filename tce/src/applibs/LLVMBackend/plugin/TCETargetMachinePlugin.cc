@@ -103,16 +103,22 @@ public:
     unsigned int raPortDRegNum();
     std::string dataASName();
 
-    virtual bool hasSDIV() const;
-    virtual bool hasUDIV() const;
-    virtual bool hasSREM() const;
-    virtual bool hasUREM() const;
-    virtual bool hasMUL() const;
-    virtual bool hasROTL() const;
-    virtual bool hasROTR() const;
-    virtual bool hasSXHW() const;
-    virtual bool hasSXQW() const;
-    virtual bool hasSQRTF() const;
+    virtual bool hasSDIV() const override;
+    virtual bool hasUDIV() const override;
+    virtual bool hasSREM() const override;
+    virtual bool hasUREM() const override;
+    virtual bool hasMUL() const override;
+    virtual bool hasROTL() const override;
+    virtual bool hasROTR() const override;
+    virtual bool hasSXHW() const override;
+    virtual bool hasSXQW() const override;
+    virtual bool hasSQRTF() const override;
+    virtual bool hasSHR() const override;
+    virtual bool hasSHL() const override;
+    virtual bool hasSHRU() const override;
+    virtual bool has8bitLoads() const override;
+    virtual bool has16bitLoads() const override;
+
     virtual int maxVectorSize() const;
 
     virtual void registerTargetMachine(TCETargetMachine &tm);
@@ -167,7 +173,7 @@ GeneratedTCEPlugin::GeneratedTCEPlugin() :
          const_cast<TCERegisterInfo*>(
              static_cast<const TCERegisterInfo*>(getRegisterInfo()));
 
-     frameInfo_ = new TCEFrameInfo(ri, tii, stackAlignment);
+     frameInfo_ = new TCEFrameLowering(ri, tii, stackAlignment);
      subTarget_ = new TCESubtarget(this);
 }
 
@@ -195,11 +201,7 @@ GeneratedTCEPlugin::registerTargetMachine(
     }
 
     if (lowering_ == NULL) {
-#ifdef LLVM_OLDER_THAN_3_7
-        lowering_ = new TCETargetLowering(*tm_);
-#else
         lowering_ = new TCETargetLowering(*tm_, *subTarget_);
-#endif
     }
 }
 
@@ -295,12 +297,15 @@ GeneratedTCEPlugin::operationName(unsigned opc) const {
     const std::string PSEUDO = "PSEUDO";
     const std::string NOP = "NOP";
     const std::string INLINEASM = "INLINEASM";
+    const std::string DEBUG_LABEL = "DEBUG_LABEL";
 
     if (opc == TCE::IMPLICIT_DEF) return PSEUDO;
     else if (opc == TCE::ADJCALLSTACKDOWN) return PSEUDO;
     else if (opc == TCE::ADJCALLSTACKUP) return PSEUDO;
     else if (opc == TCE::NOP) return NOP;
-
+#ifndef LLVM_OLDER_THAN_7
+    else if (opc == TCE::DBG_LABEL) return DEBUG_LABEL;
+#endif
     // Moves
     if (opc == TCE::COPY) return MOVE;
     if (opc == TCE::MOVI1rr) return MOVE;
@@ -337,21 +342,10 @@ GeneratedTCEPlugin::operationName(unsigned opc) const {
     if (opc == TCE::STQBrj) return "stq";
     if (opc == TCE::STQBij) return "stq";
 
-    if (opc == TCE::LDQBr) return "ldq";
-    if (opc == TCE::LDQBi) return "ldq";
-    if (opc == TCE::LDQUBr) return "ldqu";
-    if (opc == TCE::LDQUBi) return "ldqu";
-
     if (opc == TCE::ST8Brb) return "st8";
     if (opc == TCE::ST8Bib) return "st8";
     if (opc == TCE::ST8Brj) return "st8";
     if (opc == TCE::ST8Bij) return "st8";
-
-    if (opc == TCE::LD8Br) return "ld8";
-    if (opc == TCE::LD8Bi) return "ld8";
-    if (opc == TCE::LDU8Br) return "ldu8";
-    if (opc == TCE::LDU8Bi) return "ldu8";
-
 
     // temporary RA register store/loads
     if (opc == TCE::STWRArr) return "stw";

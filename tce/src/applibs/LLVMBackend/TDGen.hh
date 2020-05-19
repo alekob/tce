@@ -257,6 +257,13 @@ protected:
     void createByteExtLoadPatterns(std::ostream& os);
     void createShortExtLoadPatterns(std::ostream& os);
     void createEndiannesQuery(std::ostream& os);
+    void createConstShiftPatterns(std::ostream& os);
+
+    void writeConstShiftPat(std::ostream& os,
+                            const TCEString& nodeName,
+                            const TCEString& opNameBase, int i);
+
+    void createBoolAndHalfLoadPatterns(std::ostream& os);
 
     void writeCallSeqStart(std::ostream& os);
 

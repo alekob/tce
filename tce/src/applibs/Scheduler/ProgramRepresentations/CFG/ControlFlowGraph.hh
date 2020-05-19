@@ -126,8 +126,8 @@ public:
     void updateReferencesFromProcToCfg();
     void convertBBRefsToInstRefs();
 
-    bool hasIncomingFallThru(const BasicBlockNode& bbn) const;
-
+    ControlFlowEdge* incomingFTEdge(const BasicBlockNode& bbn) const;
+    EdgeSet incomingJumpEdges(const BasicBlockNode& bbn) const;
     bool hasIncomingExternalJumps(const BasicBlockNode& bbn) const;
 
     void deleteNodeAndRefs(BasicBlockNode& node);
@@ -139,7 +139,7 @@ public:
     }
 
     BasicBlockNode* jumpSuccessor(BasicBlockNode& bbn);
-    BasicBlockNode* fallThruSuccessor(BasicBlockNode& bbn);
+    BasicBlockNode* fallThruSuccessor(const BasicBlockNode& bbn);
 
     void addExitFromSinkNodes(BasicBlockNode* exitNode);
     void detectBackEdges();
@@ -246,7 +246,7 @@ private:
     void addEntryExitEdge();
     void removeEntryExitEdge();
 
-    bool hasFallThruPredecessor(BasicBlockNode& bbn);
+    bool hasFallThruPredecessor(const BasicBlockNode& bbn);
 
     NodeSet findReachableNodes();
     NodeSet findUnreachableNodes(const NodeSet& reachableNodes);

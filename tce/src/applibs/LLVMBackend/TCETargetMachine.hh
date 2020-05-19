@@ -53,11 +53,7 @@ IGNORE_COMPILER_WARNING("-Wunused-parameter")
 #include "llvm/CodeGen/SelectionDAGTargetInfo.h"
 #endif
 
-#ifdef LLVM_OLDER_THAN_3_7
-#include "llvm/PassManager.h"
-#else
 #include "llvm/IR/PassManager.h"
-#endif
 //#include "TCESubtarget.hh"
 
 #include "TCEStubTargetMachine.hh"
@@ -72,8 +68,7 @@ IGNORE_COMPILER_WARNING("-Wunused-parameter")
 #include "llvm/CodeGen/Passes.h"
 #include "llvm/IR/DataLayout.h"
 
-#ifdef LLVM_OLDER_THAN_3_9
-#else
+#ifndef LLVM_OLDER_THAN_3_9
 #include "llvm/CodeGen/TargetPassConfig.h"
 #endif
 
@@ -108,13 +103,8 @@ plugin_(plugin) {
 	virtual bool addPreISel();
 	virtual bool addInstSelector();
 
-#ifdef LLVM_OLDER_THAN_3_6
-	virtual bool addPreRegAlloc();
-	virtual bool addPreSched2();
-#else
 	virtual void addPreRegAlloc();
 	virtual void addPreSched2();
-#endif
 
 	TCETargetMachinePlugin* plugin_;
     };
@@ -127,13 +117,7 @@ plugin_(plugin) {
     class TCETargetMachine : public TCEBaseTargetMachine {
 
     public:
-#ifdef LLVM_OLDER_THAN_3_7
-        TCETargetMachine(
-            const Target &T, const std::string &TT,
-            const std::string& CPU, const std::string &FS,
-            const TargetOptions &Options,
-            Reloc::Model RM, CodeModel::Model CM, CodeGenOpt::Level OL);
-#elif defined LLVM_OLDER_THAN_3_9
+#ifdef LLVM_OLDER_THAN_3_9
         TCETargetMachine(
             const Target &T, const Triple& TTriple,
             const std::string& CPU, const std::string &FS, 
@@ -168,12 +152,6 @@ plugin_(plugin) {
             emulationModule_ = mod;
         }
 
-#ifdef LLVM_OLDER_THAN_3_7
-        virtual const TargetSubtargetInfo* getSubtargetImpl() const {
-            return plugin_->getSubtarget(); 
-        }
-#else
-
         // This method is only in llvm < 3.7, but keep this here to
         // allow calling this ourselves.
         virtual const TCESubtarget* getSubtargetImpl() const {
@@ -185,7 +163,6 @@ plugin_(plugin) {
         virtual const TargetSubtargetInfo* getSubtargetImpl(const Function&) const {
             return plugin_->getSubtarget(); 
         }
-#endif
 
         virtual const TargetInstrInfo* getInstrInfo() const {
             return plugin_->getInstrInfo();
@@ -206,18 +183,15 @@ plugin_(plugin) {
             return plugin_->getTargetLowering();
         }
 
-#ifdef LLVM_3_5
-        virtual const TargetSelectionDAGInfo* getSelectionDAGInfo() 
-            const override {
-            return plugin_->getSelectionDAGInfo();
-        }
-#endif
-
         virtual TargetPassConfig *createPassConfig(
             PassManagerBase &PM);
 
         std::string operationName(unsigned opc) const {
             return plugin_->operationName(opc);
+        }
+
+        bool hasOperation(TCEString operationName) const {
+            return plugin_->hasOperation(operationName);
         }
 
         std::string rfName(unsigned dwarfRegNum) const {
@@ -271,9 +245,21 @@ plugin_(plugin) {
             return plugin_->getMaxMemoryAlignment();
         }
 
+        bool has8bitLoads() const {
+            return plugin_->has8bitLoads();
+        }
+
+        bool has16bitLoads() const {
+            return plugin_->has16bitLoads();
+        }
+
         const std::set<
             std::pair<unsigned, 
                       llvm::MVT::SimpleValueType> >* missingOperations();
+
+        const std::set<
+            std::pair<unsigned,
+                      llvm::MVT::SimpleValueType> >* customLegalizedOperations();
 
     private:
         /* more or less llvm naming convention to make it easier to track llvm changes */
@@ -282,6 +268,7 @@ plugin_(plugin) {
         PluginTools* pluginTool_;
         /// llvm::ISD opcode list of operations that have to be expanded.
         std::set<std::pair<unsigned, llvm::MVT::SimpleValueType> > missingOps_;
+        std::set<std::pair<unsigned, llvm::MVT::SimpleValueType> > customLegalizedOps_;
     };
 }
 

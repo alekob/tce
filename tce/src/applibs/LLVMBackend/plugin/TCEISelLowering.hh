@@ -41,6 +41,9 @@
 #include "TCEPlugin.hh"
 #include "TCESubtarget.hh"
 #include "tce_config.h"
+#include "TCEString.hh"
+#include <map>
+#include <iostream>
 
 namespace TCEISD {
     enum {
@@ -65,7 +68,10 @@ namespace TCEISD {
 
         CALL,        // A call instruction.
         RET_FLAG ,    // Return with a flag operand.
-        RET_FLAG_old
+        RET_FLAG_old,
+        SRA_Const,
+        SRL_Const,
+        SHL_Const
    };
 }
 
@@ -85,29 +91,17 @@ namespace llvm {
     class TCETargetLowering : public llvm::TargetLowering {
         mutable int VarArgsFrameOffset;   // Frame offset to start of varargs area.
     public:
-#ifdef LLVM_OLDER_THAN_3_7
-        TCETargetLowering(TargetMachine& TM);
-#else
         TCETargetLowering(TargetMachine& TM, const TCESubtarget &subt);
-#endif
         virtual SDValue LowerOperation(SDValue Op, SelectionDAG &DAG) const override;
 
         int getVarArgsFrameOffset() const /* override */ { return VarArgsFrameOffset; }
 
        virtual const char* getTargetNodeName(unsigned opcode) const override;
 
-#ifdef LLVM_OLDER_THAN_3_7        
-        ConstraintType getConstraintType(const std::string &Constraint) const override;
-
-        std::pair<unsigned, const TargetRegisterClass*>
-        getRegForInlineAsmConstraint(const std::string &Constraint, MVT VT) const override;
-#else
         ConstraintType getConstraintType(StringRef Constraint) const override;
         std::pair<unsigned, const TargetRegisterClass *>
         getRegForInlineAsmConstraint(const TargetRegisterInfo *TRI,
                                      StringRef Constraint, MVT VT) const override;
-#endif
-
 
         //TODO: this is from some old version - which?
         std::vector<unsigned>
@@ -128,6 +122,10 @@ namespace llvm {
         SDValue LowerTRAP(SDValue Op, SelectionDAG &DAG) const;
         SDValue LowerVASTART(SDValue Op, SelectionDAG &DAG) const;
         SDValue LowerBlockAddress(SDValue Op, SelectionDAG &DAG) const;
+        SDValue LowerShift(SDValue op, SelectionDAG& dag) const;
+        SDValue lowerExtOrBoolLoad(SDValue op, SelectionDAG& DAG) const;
+
+        std::pair<int, TCEString> getConstShiftNodeAndTCEOP(SDValue op) const;
 
         virtual SDValue
         LowerCall(TargetLowering::CallLoweringInfo &CLI,
@@ -140,16 +138,10 @@ namespace llvm {
                     const SmallVectorImpl<SDValue> &OutVals,
                     SDLOC_PARAM_TYPE dl, SelectionDAG &DAG) const override;
 
-#if defined(LLVM_3_5)
-        virtual bool allowsUnalignedMemoryAccesses(EVT,
-                                                   unsigned,
-                                                   bool*) const override;
-#else // LLVM 3.6+
 #ifdef LLVM_OLDER_THAN_9
         virtual bool allowsMisalignedMemoryAccesses(EVT VT, unsigned as, unsigned align, bool* ) const override;
 #else // LLVM 9+
         virtual bool allowsMisalignedMemoryAccesses(EVT VT, unsigned as, unsigned align, MachineMemOperand::Flags flags, bool* ) const override;
-#endif
 #endif
         // We can ignore the bitwidth differences between the pointers
         // for now. It's the programmer's responsibility to ensure they
@@ -166,12 +158,8 @@ namespace llvm {
         TCETargetMachine& tm_;
         
     public:        
-#ifdef LLVM_OLDER_THAN_3_7
-        virtual llvm::EVT getSetCCResultType(LLVMContext&,llvm::EVT VT) const override;
-#else
         virtual llvm::EVT getSetCCResultType(const DataLayout &DL, LLVMContext &Context,
                                        EVT VT) const override;
-#endif
 
 #ifdef LLVM_OLDER_THAN_9
         virtual bool isFPImmLegal(const APFloat& apf, EVT VT) const override {
@@ -189,6 +177,15 @@ namespace llvm {
             return false;
         }
 #endif
+
+    SDValue ExpandLibCall(
+        RTLIB::Libcall LC, SDNode *Node, bool isSigned, SelectionDAG &DAG)
+        const;
+
+        void ReplaceNodeResults(SDNode * node,
+                                SmallVectorImpl< SDValue > &,
+                                SelectionDAG &) const override;
+
     };
 }
 
